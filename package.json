@@ -10,7 +10,8 @@
     "start": "npm run assets --silent && electron .",
     "assets": "node scripts/gen-assets.js",
     "pack": "npm run assets && electron-builder --dir",
-    "dist": "npm run assets && electron-builder --mac"
+    "dist": "npm run assets && electron-builder --mac",
+    "install-app": "npm run pack && rm -rf '/Applications/YouTube Music.app' && cp -R 'dist/mac-arm64/YouTube Music.app' '/Applications/' && echo '\\n✓ Installed to /Applications/YouTube Music.app'"
   },
   "build": {
     "appId": "capital.hove.youtubemusic",

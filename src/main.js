@@ -9,6 +9,7 @@ const {
   Menu,
   nativeImage,
   Notification,
+  session,
   shell,
 } = require('electron');
 const { buildMenu } = require('./menu');
@@ -28,11 +29,13 @@ app.commandLine.appendSwitch(
 app.setName('YouTube Music');
 
 const YTM_URL = 'https://music.youtube.com/';
-// A current desktop-Chrome UA so Google sign-in doesn't reject the Electron UA
-// with "this browser or app may not be secure".
+// A real desktop-Chrome UA presented app-wide (window + iframes + sub-requests)
+// so YT Music serves its full experience and Google's browser-integrity check
+// on the sign-in flow doesn't flag us as "this browser or app may not be
+// secure". See setupUserAgent() for the accounts.google.com nuance.
 const CHROME_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+  '(KHTML, like Gecko) Chrome/130.0.6723.152 Safari/537.36';
 
 const STATE_FILE = path.join(app.getPath('userData'), 'window-state.json');
 
@@ -203,6 +206,39 @@ function createTray() {
   rebuildTrayMenu();
 }
 
+// --- user agent (makes Google sign-in work) --------------------------------
+// Google blocks sign-in from contexts it can't verify as a real browser. The
+// fix (mirrors th-ch/youtube-music): present a genuine desktop-Chrome UA
+// everywhere — the window AND, via userAgentFallback, every iframe / sub-request
+// (e.g. Google's password-step integrity check) — so nothing leaks the raw
+// Electron UA. Requests made *while already on* accounts.google.com fall back to
+// the genuine UA, which Google accepts on a sign-in retry.
+
+let uaConfigured = false;
+
+function setupUserAgent(win) {
+  const genuineUA = win.webContents.userAgent;
+  win.webContents.userAgent = CHROME_UA;
+  app.userAgentFallback = CHROME_UA;
+
+  if (uaConfigured) return; // one webRequest listener per session
+  uaConfigured = true;
+  session.defaultSession.webRequest.onBeforeSendHeaders((details, cb) => {
+    try {
+      if (
+        mainWindow &&
+        mainWindow.webContents.getURL().startsWith('https://accounts.google.com') &&
+        details.url.startsWith('https://accounts.google.com')
+      ) {
+        details.requestHeaders['User-Agent'] = genuineUA;
+      }
+    } catch {
+      /* window may be gone */
+    }
+    cb({ requestHeaders: details.requestHeaders });
+  });
+}
+
 // --- main window -----------------------------------------------------------
 
 function createWindow() {
@@ -223,8 +259,8 @@ function createWindow() {
     },
   });
 
-  mainWindow.webContents.setUserAgent(CHROME_UA);
-  mainWindow.loadURL(YTM_URL, { userAgent: CHROME_UA });
+  setupUserAgent(mainWindow);
+  mainWindow.loadURL(YTM_URL);
 
   // Popups (e.g. Google sign-in): keep auth flows in-app, send the rest to the
   // system browser.
