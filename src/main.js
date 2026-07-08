@@ -150,6 +150,37 @@ function handleNowPlaying(info) {
   }
 }
 
+// --- session-takeover dialog -------------------------------------------------
+// When the same account starts streaming on another device (phone, browser
+// tab), YT Music pauses playback and shows "Listen on this device?". Answer
+// "Switch" automatically so this device keeps playing. Matched on the dialog
+// text, never the dialog type: YT Music reuses the same dialog renderer for
+// destructive confirmations (delete playlist etc.) that must not be
+// auto-accepted.
+
+function dismissTakeoverDialog() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents
+    .executeJavaScript(
+      `(() => {
+        for (const dlg of document.querySelectorAll('tp-yt-paper-dialog, dialog')) {
+          if (dlg.style.display === 'none') continue;
+          if (!/(another device|listen on this device)/i.test(dlg.textContent || '')) continue;
+          for (const btn of dlg.querySelectorAll('button, a, tp-yt-paper-button')) {
+            const label = (btn.textContent || '').trim();
+            if (/^(switch|listen on this device)$/i.test(label)) {
+              btn.click();
+              return true;
+            }
+          }
+        }
+        return false;
+      })()`,
+      true
+    )
+    .catch(() => {});
+}
+
 // --- tray ------------------------------------------------------------------
 
 function trayIcon() {
@@ -280,7 +311,10 @@ function createWindow() {
 
   mainWindow.webContents.on('did-finish-load', () => {
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(pollNowPlaying, 1500);
+    pollTimer = setInterval(() => {
+      pollNowPlaying();
+      dismissTakeoverDialog();
+    }, 1500);
     pollNowPlaying();
   });
 
