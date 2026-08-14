@@ -33,9 +33,10 @@ const YTM_URL = 'https://music.youtube.com/';
 // so YT Music serves its full experience and Google's browser-integrity check
 // on the sign-in flow doesn't flag us as "this browser or app may not be
 // secure". See setupUserAgent() for the accounts.google.com nuance.
+// Chrome version tracks Electron's bundled Chromium, so the UA never goes stale.
 const CHROME_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
-  '(KHTML, like Gecko) Chrome/130.0.6723.152 Safari/537.36';
+  `(KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 
 const STATE_FILE = path.join(app.getPath('userData'), 'window-state.json');
 
@@ -67,7 +68,10 @@ function readState() {
 const saveState = debounce(() => {
   if (!mainWindow || mainWindow.isMinimized() || mainWindow.isFullScreen()) return;
   try {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(mainWindow.getBounds()));
+    fs.writeFileSync(
+      STATE_FILE,
+      JSON.stringify({ ...mainWindow.getBounds(), notificationsEnabled })
+    );
   } catch {
     /* non-fatal */
   }
@@ -142,11 +146,18 @@ function handleNowPlaying(info) {
     mainWindow &&
     !mainWindow.isFocused();
   if (shouldNotify) {
-    new Notification({
+    const n = new Notification({
       title: info.title,
       body: info.artist || info.album || '',
       silent: true,
-    }).show();
+    });
+    n.on('click', () => {
+      if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+    n.show();
   }
 }
 
@@ -216,6 +227,7 @@ function rebuildTrayMenu() {
         checked: notificationsEnabled,
         click: (item) => {
           notificationsEnabled = item.checked;
+          saveState();
         },
       },
       { type: 'separator' },
@@ -274,6 +286,7 @@ function setupUserAgent(win) {
 
 function createWindow() {
   const state = readState();
+  notificationsEnabled = state.notificationsEnabled !== false;
   mainWindow = new BrowserWindow({
     width: state.width || 1280,
     height: state.height || 820,
@@ -370,6 +383,16 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
     createTray();
     buildMenu();
+
+    if (app.dock) {
+      app.dock.setMenu(
+        Menu.buildFromTemplate([
+          { label: 'Play / Pause', click: playPause },
+          { label: 'Next', click: nextTrack },
+          { label: 'Previous', click: prevTrack },
+        ])
+      );
+    }
 
     app.on('activate', () => {
       if (mainWindow) {
