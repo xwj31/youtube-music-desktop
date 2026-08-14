@@ -1,10 +1,10 @@
 'use strict';
 
-const { app, Menu } = require('electron');
+const { app, BrowserWindow, Menu } = require('electron');
 
 // Standard macOS application menu so the usual shortcuts work inside the
 // wrapper: Cmd-C/V/X, Cmd-Q/W/M, zoom, reload, fullscreen, and dev tools.
-function buildMenu(win) {
+function buildMenu() {
   const isMac = process.platform === 'darwin';
 
   const template = [
@@ -50,7 +50,10 @@ function buildMenu(win) {
         {
           label: 'Toggle Developer Tools',
           accelerator: isMac ? 'Alt+Cmd+I' : 'Ctrl+Shift+I',
-          click: () => win && win.webContents.toggleDevTools(),
+          click: () => {
+            const w = BrowserWindow.getFocusedWindow();
+            if (w) w.webContents.toggleDevTools();
+          },
         },
       ],
     },

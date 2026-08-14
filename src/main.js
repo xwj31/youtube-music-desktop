@@ -159,8 +159,8 @@ function handleNowPlaying(info) {
 // auto-accepted.
 
 function dismissTakeoverDialog() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  mainWindow.webContents
+  if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve();
+  return mainWindow.webContents
     .executeJavaScript(
       `(() => {
         for (const dlg of document.querySelectorAll('tp-yt-paper-dialog, dialog')) {
@@ -311,11 +311,30 @@ function createWindow() {
 
   mainWindow.webContents.on('did-finish-load', () => {
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(() => {
-      pollNowPlaying();
-      dismissTakeoverDialog();
+    // Busy flag: if the renderer stalls, skip ticks instead of queueing an
+    // unresolved executeJavaScript promise every 1.5s forever.
+    let tickBusy = false;
+    pollTimer = setInterval(async () => {
+      if (tickBusy) return;
+      tickBusy = true;
+      try {
+        await pollNowPlaying();
+        await dismissTakeoverDialog();
+      } finally {
+        tickBusy = false;
+      }
     }, 1500);
     pollNowPlaying();
+  });
+
+  // Recovery: a hung renderer otherwise blocks close/quit and leaks memory.
+  mainWindow.webContents.on('unresponsive', () => {
+    mainWindow.webContents.forcefullyCrashRenderer();
+  });
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
+    if (!isQuitting && details.reason !== 'clean-exit') {
+      mainWindow.webContents.reload();
+    }
   });
 
   mainWindow.on('resize', saveState);
@@ -328,6 +347,10 @@ function createWindow() {
       event.preventDefault();
       mainWindow.hide();
     }
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
   });
 }
 
@@ -346,7 +369,7 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     createWindow();
     createTray();
-    buildMenu(mainWindow);
+    buildMenu();
 
     app.on('activate', () => {
       if (mainWindow) {
@@ -360,6 +383,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     isQuitting = true;
     if (pollTimer) clearInterval(pollTimer);
+    // destroy() skips beforeunload/close waiting, so quit can never be
+    // blocked by a hung renderer. Bounds were already saved on resize/move.
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.destroy();
   });
 
   // Tray app: keep running when the window is closed/hidden.
