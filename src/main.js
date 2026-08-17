@@ -11,6 +11,7 @@ const {
   Notification,
   session,
   shell,
+  powerMonitor,
 } = require('electron');
 const { buildMenu } = require('./menu');
 
@@ -39,6 +40,17 @@ const CHROME_UA =
   `(KHTML, like Gecko) Chrome/${process.versions.chrome} Safari/537.36`;
 
 const STATE_FILE = path.join(app.getPath('userData'), 'window-state.json');
+const LOG_FILE = path.join(app.getPath('userData'), 'pause-debug.log');
+
+// Pause diagnostics: logs only state transitions and lifecycle events, so the
+// file stays tiny — no rotation needed.
+function logEvent(msg) {
+  try {
+    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    /* non-fatal */
+  }
+}
 
 let mainWindow = null;
 let tray = null;
@@ -121,9 +133,22 @@ async function pollNowPlaying() {
     const info = await mainWindow.webContents.executeJavaScript(
       `(() => {
         const ms = navigator.mediaSession;
-        const m = ms && ms.metadata;
-        if (!m) return null;
-        return { title: m.title || '', artist: m.artist || '', album: m.album || '' };
+        const m = (ms && ms.metadata) || {};
+        // Ground truth from the <video> element, not mediaSession.playbackState.
+        const v = document.querySelector('video');
+        let dialog = '';
+        for (const dlg of document.querySelectorAll('tp-yt-paper-dialog, dialog')) {
+          if (dlg.style.display === 'none') continue;
+          const t = (dlg.textContent || '').replace(/\\s+/g, ' ').trim();
+          if (t) dialog = t.slice(0, 300);
+        }
+        return {
+          title: m.title || '',
+          artist: m.artist || '',
+          album: m.album || '',
+          state: v ? (v.paused ? 'paused' : 'playing') : 'no-player',
+          dialog,
+        };
       })()`,
       true
     );
@@ -133,8 +158,19 @@ async function pollNowPlaying() {
   }
 }
 
+let lastPlaybackState = '';
+
 function handleNowPlaying(info) {
-  if (!info || !info.title) return;
+  if (!info) return;
+  if (info.state !== lastPlaybackState) {
+    logEvent(
+      `state ${lastPlaybackState || '(start)'} -> ${info.state}` +
+        ` | track: ${info.title} — ${info.artist}` +
+        (info.dialog ? ` | dialog: ${JSON.stringify(info.dialog)}` : '')
+    );
+    lastPlaybackState = info.state;
+  }
+  if (!info.title) return;
   const key = `${info.title} — ${info.artist}`;
   if (tray) tray.setToolTip(key);
   if (key === lastTrackKey) return;
@@ -189,6 +225,9 @@ function dismissTakeoverDialog() {
       })()`,
       true
     )
+    .then((clicked) => {
+      if (clicked) logEvent('auto-clicked "Switch" on device-takeover dialog');
+    })
     .catch(() => {});
 }
 
@@ -323,6 +362,7 @@ function createWindow() {
   });
 
   mainWindow.webContents.on('did-finish-load', () => {
+    logEvent(`page loaded: ${mainWindow.webContents.getURL()}`);
     if (pollTimer) clearInterval(pollTimer);
     // Busy flag: if the renderer stalls, skip ticks instead of queueing an
     // unresolved executeJavaScript promise every 1.5s forever.
@@ -342,9 +382,11 @@ function createWindow() {
 
   // Recovery: a hung renderer otherwise blocks close/quit and leaks memory.
   mainWindow.webContents.on('unresponsive', () => {
+    logEvent('renderer unresponsive — force-crashing it');
     mainWindow.webContents.forcefullyCrashRenderer();
   });
   mainWindow.webContents.on('render-process-gone', (event, details) => {
+    logEvent(`render process gone: ${details.reason}`);
     if (!isQuitting && details.reason !== 'clean-exit') {
       mainWindow.webContents.reload();
     }
@@ -380,6 +422,12 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(() => {
+    logEvent('app started');
+    // Sleep/wake pauses are expected, not a bug — log them so they can be
+    // ruled out when reading the pause log.
+    powerMonitor.on('suspend', () => logEvent('system suspend'));
+    powerMonitor.on('resume', () => logEvent('system resume'));
+
     createWindow();
     createTray();
     buildMenu();
